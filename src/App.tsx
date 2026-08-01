@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2 } from 'lucide-react';
+import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText } from 'lucide-react';
 import { chunkText, retrieveContext, DocumentChunk } from './utils/rag';
+import { describeFile, parseUploadedFile, UploadedDocument } from './utils/fileParsers';
 
 export default function App() {
   const [inputText, setInputText] = useState('');
@@ -9,15 +10,22 @@ export default function App() {
   const [retrievedDocs, setRetrievedDocs] = useState<DocumentChunk[]>([]);
   const [status, setStatus] = useState<string>('Ready');
   const [isLoading, setIsLoading] = useState(false);
-  
+  const [uploadedDocs, setUploadedDocs] = useState<UploadedDocument[]>([]);
+  const [answer, setAnswer] = useState<string>('');
+  const [isDragging, setIsDragging] = useState(false);
+
   const worker = useRef<Worker | null>(null);
+  const chunksRef = useRef<DocumentChunk[]>([]);
 
   useEffect(() => {
-    // Instantiate Web Worker
+    chunksRef.current = chunks;
+  }, [chunks]);
+
+  useEffect(() => {
     worker.current = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
     worker.current.onmessage = (e) => {
-      const { type, data, error, progress } = e.data;
+      const { type, data, error, progress, token } = e.data;
 
       if (type === 'PROGRESS') {
         setStatus(`Loading Model: ${progress?.file ?? ''} (${Math.round(progress?.progress ?? 0)}%)`);
@@ -27,9 +35,13 @@ export default function App() {
         setIsLoading(false);
       } else if (type === 'QUERY_EMBEDDED') {
         const { embedding } = data;
-        const matches = retrieveContext(embedding, chunks, 3);
+        const matches = retrieveContext(embedding, chunksRef.current, 3);
         setRetrievedDocs(matches);
         setStatus('Retrieval complete');
+      } else if (type === 'ANSWER_STREAM') {
+        setAnswer((prev) => prev + token);
+      } else if (type === 'ANSWER_COMPLETE') {
+        setStatus('Answer generated locally');
         setIsLoading(false);
       } else if (type === 'ERROR') {
         setStatus(`Error: ${error}`);
@@ -38,14 +50,15 @@ export default function App() {
     };
 
     return () => worker.current?.terminate();
-  }, [chunks]);
+  }, []);
 
-  const handleProcessDocument = () => {
-    if (!inputText.trim()) return;
+  const handleProcessText = (textToProcess: string, label = 'Knowledge context') => {
+    if (!textToProcess.trim()) return;
     setIsLoading(true);
-    setStatus('Chunking text...');
+    setAnswer('');
+    setStatus(`Chunking ${label.toLowerCase()}...`);
 
-    const rawChunks = chunkText(inputText);
+    const rawChunks = chunkText(textToProcess);
     const structuredChunks: DocumentChunk[] = rawChunks.map((text, idx) => ({
       id: `chunk-${idx}`,
       text
@@ -58,16 +71,41 @@ export default function App() {
     });
   };
 
+  const handleProcessDocument = () => {
+    handleProcessText(inputText);
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim() || chunks.length === 0) return;
 
     setIsLoading(true);
+    setAnswer('');
     setStatus('Embedding query...');
     worker.current?.postMessage({
       type: 'EMBED_QUERY',
-      data: { query }
+      data: { query, chunks: chunksRef.current }
     });
+  };
+
+  const handleFileUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const parsedDocs = [] as UploadedDocument[];
+    for (const file of Array.from(files)) {
+      const parsed = await parseUploadedFile(file);
+      parsedDocs.push(parsed);
+    }
+
+    const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
+    setUploadedDocs(parsedDocs);
+    handleProcessText(combinedText, 'uploaded document');
+  };
+
+  const onDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    await handleFileUpload(event.dataTransfer.files);
   };
 
   return (
@@ -92,6 +130,28 @@ export default function App() {
             <span className="text-xs text-slate-400">{chunks.length} chunks stored</span>
           </div>
 
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={onDrop}
+            className={`rounded-lg border-2 border-dashed p-3 transition ${isDragging ? 'border-indigo-400 bg-indigo-950/40' : 'border-slate-800 bg-slate-950/40'}`}
+          >
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+              <Upload className="w-4 h-4" />
+              Drag and drop PDFs, DOCX, TXT, or MD files here
+            </div>
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.docx,.txt,.md,.markdown"
+              className="mt-3 block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500"
+              onChange={(event) => handleFileUpload(event.target.files)}
+            />
+          </div>
+
           <textarea
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -107,6 +167,22 @@ export default function App() {
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
             Vectorize Context
           </button>
+
+          {uploadedDocs.length > 0 && (
+            <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm text-slate-300">
+              <div className="flex items-center gap-2 text-indigo-300 mb-2">
+                <FileText className="w-4 h-4" />
+                Uploaded documents
+              </div>
+              <ul className="space-y-1">
+                {uploadedDocs.map((doc) => (
+                  <li key={doc.id} className="text-xs text-slate-400">
+                    {describeFile(doc)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
 
         {/* Right Column: Query & Retrieval */}
@@ -147,6 +223,13 @@ export default function App() {
                   <p>{doc.text}</p>
                 </div>
               ))
+            )}
+
+            {answer && (
+              <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 p-3">
+                <h3 className="text-xs uppercase font-semibold text-emerald-300 tracking-wider mb-2">Answer</h3>
+                <p className="text-sm text-emerald-100 whitespace-pre-wrap">{answer}</p>
+              </div>
             )}
           </div>
         </section>
