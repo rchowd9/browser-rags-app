@@ -22,6 +22,13 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function createDocumentId(file: File): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `${crypto.randomUUID()}-${file.name}`;
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.name}`;
+}
+
 export async function parseUploadedFile(file: File): Promise<UploadedDocument> {
   const extension = getFileExtension(file.name);
   let content = '';
@@ -55,12 +62,17 @@ export async function parseUploadedFile(file: File): Promise<UploadedDocument> {
     content = await file.text();
   }
 
+  const trimmedContent = content.trim();
+  if (!trimmedContent) {
+    throw new Error(`No readable text was found in ${file.name}.`);
+  }
+
   return {
-    id: `${file.name}-${file.size}`,
+    id: createDocumentId(file),
     name: file.name,
     size: file.size,
     type: file.type || `${extension} file`,
-    content: content.trim()
+    content: trimmedContent
   };
 }
 

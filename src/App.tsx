@@ -13,9 +13,12 @@ export default function App() {
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDocument[]>([]);
   const [answer, setAnswer] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
 
   const worker = useRef<Worker | null>(null);
   const chunksRef = useRef<DocumentChunk[]>([]);
+  const requestIdRef = useRef(0);
+  const activeRequestIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     chunksRef.current = chunks;
@@ -25,7 +28,10 @@ export default function App() {
     worker.current = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
     worker.current.onmessage = (e) => {
-      const { type, data, error, progress, token } = e.data;
+      const { type, data, error, progress, token, requestId } = e.data;
+      if (requestId !== undefined && activeRequestIdRef.current !== null && requestId !== activeRequestIdRef.current) {
+        return;
+      }
 
       if (type === 'PROGRESS') {
         setStatus(`Loading Model: ${progress?.file ?? ''} (${Math.round(progress?.progress ?? 0)}%)`);
@@ -43,7 +49,12 @@ export default function App() {
       } else if (type === 'ANSWER_COMPLETE') {
         setStatus('Answer generated locally');
         setIsLoading(false);
+      } else if (type === 'ANSWER_FALLBACK') {
+        setAnswer(data.text);
+        setStatus('Answer generation unavailable in this browser');
+        setIsLoading(false);
       } else if (type === 'ERROR') {
+        setErrorMessage(error);
         setStatus(`Error: ${error}`);
         setIsLoading(false);
       }
@@ -53,9 +64,18 @@ export default function App() {
   }, []);
 
   const handleProcessText = (textToProcess: string, label = 'Knowledge context') => {
-    if (!textToProcess.trim()) return;
+    if (!textToProcess.trim()) {
+      setErrorMessage('Please provide some text or upload a document first.');
+      return;
+    }
+
+    const nextRequestId = requestIdRef.current + 1;
+    requestIdRef.current = nextRequestId;
+    activeRequestIdRef.current = nextRequestId;
+
     setIsLoading(true);
     setAnswer('');
+    setErrorMessage('');
     setStatus(`Chunking ${label.toLowerCase()}...`);
 
     const rawChunks = chunkText(textToProcess);
@@ -67,7 +87,7 @@ export default function App() {
     setStatus('Generating embeddings in Web Worker...');
     worker.current?.postMessage({
       type: 'EMBED_CHUNKS',
-      data: { chunks: structuredChunks }
+      data: { chunks: structuredChunks, requestId: nextRequestId }
     });
   };
 
@@ -79,12 +99,17 @@ export default function App() {
     e.preventDefault();
     if (!query.trim() || chunks.length === 0) return;
 
+    const nextRequestId = requestIdRef.current + 1;
+    requestIdRef.current = nextRequestId;
+    activeRequestIdRef.current = nextRequestId;
+
     setIsLoading(true);
     setAnswer('');
+    setErrorMessage('');
     setStatus('Embedding query...');
     worker.current?.postMessage({
       type: 'EMBED_QUERY',
-      data: { query, chunks: chunksRef.current }
+      data: { query, chunks: chunksRef.current, requestId: nextRequestId }
     });
   };
 
@@ -92,13 +117,31 @@ export default function App() {
     if (!files || files.length === 0) return;
 
     const parsedDocs = [] as UploadedDocument[];
+    const errors = [] as string[];
+
     for (const file of Array.from(files)) {
-      const parsed = await parseUploadedFile(file);
-      parsedDocs.push(parsed);
+      try {
+        const parsed = await parseUploadedFile(file);
+        parsedDocs.push(parsed);
+      } catch (error: any) {
+        errors.push(error?.message || `Unable to parse ${file.name}.`);
+      }
+    }
+
+    if (parsedDocs.length === 0) {
+      setUploadedDocs([]);
+      setErrorMessage(errors.join(' '));
+      setStatus('No readable content found in the uploaded files.');
+      return;
     }
 
     const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
     setUploadedDocs(parsedDocs);
+    if (errors.length > 0) {
+      setErrorMessage(`Some files could not be parsed: ${errors.join(' ')}`);
+    } else {
+      setErrorMessage('');
+    }
     handleProcessText(combinedText, 'uploaded document');
   };
 
@@ -211,6 +254,12 @@ export default function App() {
           <div className="text-xs font-mono text-indigo-400 bg-slate-950/50 p-2.5 rounded border border-slate-800/80">
             Status: {status}
           </div>
+
+          {errorMessage && (
+            <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
+              {errorMessage}
+            </div>
+          )}
 
           <div className="flex-1 space-y-3 overflow-y-auto">
             <h3 className="text-xs uppercase font-semibold text-slate-400 tracking-wider">Relevant Passages</h3>

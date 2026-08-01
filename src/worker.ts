@@ -34,9 +34,20 @@ class GenerationSingleton {
   }
 }
 
-async function streamAnswer(query: string, context: string[]) {
+async function streamAnswer(query: string, context: string[], requestId: number) {
+  const navigatorWithGpu = navigator as Navigator & { gpu?: unknown };
+  const webGpuSupported = typeof navigator !== 'undefined' && typeof navigatorWithGpu.gpu !== 'undefined';
+  if (!webGpuSupported) {
+    self.postMessage({
+      type: 'ANSWER_FALLBACK',
+      data: { text: 'WebGPU is not available in this browser, so local answer generation could not be started. Retrieval results are still shown.' },
+      requestId
+    });
+    return;
+  }
+
   const generator = await GenerationSingleton.getInstance((progress) => {
-    self.postMessage({ type: 'PROGRESS', data: progress });
+    self.postMessage({ type: 'PROGRESS', data: progress, requestId });
   });
 
   const prompt = `Answer the user's question using only the provided context.\n\nContext:\n${context.join('\n---\n')}\n\nQuestion: ${query}\nAnswer:`;
@@ -46,10 +57,10 @@ async function streamAnswer(query: string, context: string[]) {
     do_sample: true,
     streamer: {
       put: (token: string) => {
-        self.postMessage({ type: 'ANSWER_STREAM', token });
+        self.postMessage({ type: 'ANSWER_STREAM', token, requestId });
       },
       end: () => {
-        self.postMessage({ type: 'ANSWER_COMPLETE' });
+        self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
       }
     }
   });
@@ -61,7 +72,7 @@ self.addEventListener('message', async (event) => {
   if (type === 'EMBED_CHUNKS') {
     try {
       const extractor = await PipelineSingleton.getInstance((progress) => {
-        self.postMessage({ type: 'PROGRESS', data: progress });
+        self.postMessage({ type: 'PROGRESS', data: progress, requestId: data.requestId });
       });
 
       const { chunks } = data;
@@ -73,7 +84,7 @@ self.addEventListener('message', async (event) => {
         embeddedChunks.push({ ...chunk, embedding });
       }
 
-      self.postMessage({ type: 'CHUNKS_EMBEDDED', data: embeddedChunks });
+      self.postMessage({ type: 'CHUNKS_EMBEDDED', data: embeddedChunks, requestId: data.requestId });
     } catch (error: any) {
       self.postMessage({ type: 'ERROR', error: error.message });
     }
@@ -86,13 +97,13 @@ self.addEventListener('message', async (event) => {
       const embedding = Array.from(output.data) as number[];
       const matches = retrieveContext(embedding, data.chunks ?? [], 3);
 
-      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query } });
+      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query }, requestId: data.requestId });
 
       if (matches.length > 0) {
         const context = matches.map((match: any) => match.text);
-        await streamAnswer(data.query, context);
+        await streamAnswer(data.query, context, data.requestId);
       } else {
-        self.postMessage({ type: 'ANSWER_COMPLETE' });
+        self.postMessage({ type: 'ANSWER_COMPLETE', requestId: data.requestId });
       }
     } catch (error: any) {
       self.postMessage({ type: 'ERROR', error: error.message });
