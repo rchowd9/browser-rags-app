@@ -1,5 +1,5 @@
 import { pipeline, env } from '@huggingface/transformers';
-import { retrieveContext } from './utils/rag';
+import { hybridRetrieveContext } from './utils/rag';
 
 // Configure runtime
 env.allowLocalModels = false;
@@ -95,9 +95,9 @@ self.addEventListener('message', async (event) => {
       const extractor = await PipelineSingleton.getInstance();
       const output = await extractor(data.query, { pooling: 'mean', normalize: true });
       const embedding = Array.from(output.data) as number[];
-      const matches = retrieveContext(embedding, data.chunks ?? [], 3);
+      const matches = hybridRetrieveContext(embedding, data.chunks ?? [], data.query, 4);
 
-      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query }, requestId: data.requestId });
+      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches }, requestId: data.requestId });
 
       if (matches.length > 0) {
         const context = matches.map((match: any) => match.text);

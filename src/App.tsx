@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText } from 'lucide-react';
-import { chunkText, retrieveContext, DocumentChunk } from './utils/rag';
+import { chunkText, DocumentChunk, projectChunksTo2D } from './utils/rag';
 import { describeFile, parseUploadedFile, UploadedDocument } from './utils/fileParsers';
 
 export default function App() {
@@ -14,6 +14,7 @@ export default function App() {
   const [answer, setAnswer] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
 
   const worker = useRef<Worker | null>(null);
   const chunksRef = useRef<DocumentChunk[]>([]);
@@ -37,11 +38,11 @@ export default function App() {
         setStatus(`Loading Model: ${progress?.file ?? ''} (${Math.round(progress?.progress ?? 0)}%)`);
       } else if (type === 'CHUNKS_EMBEDDED') {
         setChunks(data);
+        setSelectedChunkId(null);
         setStatus('Document embedded successfully!');
         setIsLoading(false);
       } else if (type === 'QUERY_EMBEDDED') {
-        const { embedding } = data;
-        const matches = retrieveContext(embedding, chunksRef.current, 3);
+        const matches = data.matches ?? [];
         setRetrievedDocs(matches);
         setStatus('Retrieval complete');
       } else if (type === 'ANSWER_STREAM') {
@@ -150,6 +151,34 @@ export default function App() {
     setIsDragging(false);
     await handleFileUpload(event.dataTransfer.files);
   };
+
+  const projectionPoints = useMemo(() => projectChunksTo2D(chunks), [chunks]);
+  const selectedChunk = useMemo(() => {
+    if (!selectedChunkId) return null;
+    return chunks.find((chunk) => chunk.id === selectedChunkId) ?? retrievedDocs.find((chunk) => chunk.id === selectedChunkId) ?? null;
+  }, [chunks, retrievedDocs, selectedChunkId]);
+
+  const vectorStats = useMemo(() => {
+    if (retrievedDocs.length === 0) {
+      const values = chunks.map((chunk) => chunk.embedding?.length ?? 0);
+      return {
+        topSimilarity: 0,
+        avgSimilarity: 0,
+        dimensions: values[0] ?? 0,
+        points: chunks.length
+      };
+    }
+
+    const similarities = retrievedDocs.map((chunk) => chunk.similarityScore ?? 0);
+    return {
+      topSimilarity: Math.max(...similarities),
+      avgSimilarity: similarities.reduce((sum, value) => sum + value, 0) / similarities.length,
+      dimensions: chunks[0]?.embedding?.length ?? 0,
+      points: chunks.length
+    };
+  }, [chunks, retrievedDocs]);
+
+  const formatPercent = (value: number) => `${Math.max(0, value * 100).toFixed(1)}% Match`;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -261,15 +290,68 @@ export default function App() {
             </div>
           )}
 
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs uppercase font-semibold text-slate-400 tracking-wider">Embedding Inspector</h3>
+              <span className="text-[11px] text-slate-500">{vectorStats.points} points</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs text-slate-300 mb-3">
+              <div className="rounded bg-slate-900 p-2">
+                <div className="text-slate-500 text-[10px] uppercase">Top Match</div>
+                <div className="font-semibold text-indigo-300">{(vectorStats.topSimilarity * 100).toFixed(1)}%</div>
+              </div>
+              <div className="rounded bg-slate-900 p-2">
+                <div className="text-slate-500 text-[10px] uppercase">Avg Match</div>
+                <div className="font-semibold text-emerald-300">{(vectorStats.avgSimilarity * 100).toFixed(1)}%</div>
+              </div>
+              <div className="rounded bg-slate-900 p-2">
+                <div className="text-slate-500 text-[10px] uppercase">Dims</div>
+                <div className="font-semibold text-slate-100">{vectorStats.dimensions}</div>
+              </div>
+            </div>
+            <svg viewBox="0 0 320 220" className="w-full h-56 rounded-lg bg-slate-900/80">
+              <rect x="0" y="0" width="320" height="220" rx="12" fill="#020617" />
+              {projectionPoints.map((point) => {
+                const isSelected = point.chunk.id === selectedChunkId;
+                return (
+                  <g key={point.id} onClick={() => setSelectedChunkId(point.chunk.id)} className="cursor-pointer">
+                    <circle cx={point.x} cy={point.y} r={isSelected ? 7 : 5} fill={isSelected ? '#818cf8' : '#34d399'} opacity={0.9} />
+                    <circle cx={point.x} cy={point.y} r={isSelected ? 12 : 8} fill="none" stroke={isSelected ? '#a5b4fc' : 'transparent'} strokeWidth={1.5} />
+                  </g>
+                );
+              })}
+            </svg>
+            {selectedChunk && (
+              <div className="mt-3 rounded border border-indigo-900 bg-indigo-950/40 p-2 text-xs text-slate-300">
+                <div className="font-semibold text-indigo-200">Selected chunk</div>
+                <div className="mt-1 text-slate-400">{selectedChunk.id}</div>
+              </div>
+            )}
+          </div>
+
           <div className="flex-1 space-y-3 overflow-y-auto">
             <h3 className="text-xs uppercase font-semibold text-slate-400 tracking-wider">Relevant Passages</h3>
             {retrievedDocs.length === 0 ? (
               <p className="text-sm text-slate-500 italic">No search executed or no chunks match yet.</p>
             ) : (
               retrievedDocs.map((doc) => (
-                <div key={doc.id} className="p-3 bg-slate-950 border border-indigo-950 rounded-lg text-sm text-slate-300">
-                  <p className="font-mono text-xs text-indigo-400 mb-1">{doc.id}</p>
+                <div
+                  key={doc.id}
+                  onClick={() => setSelectedChunkId(doc.id)}
+                  className={`p-3 bg-slate-950 border rounded-lg text-sm text-slate-300 cursor-pointer transition ${selectedChunkId === doc.id ? 'border-indigo-400 shadow-lg shadow-indigo-950/40' : 'border-indigo-950'}`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="font-mono text-xs text-indigo-400">{doc.id}</p>
+                    <span className="rounded-full bg-indigo-600/20 text-indigo-300 px-2 py-0.5 text-[11px] whitespace-nowrap">
+                      {formatPercent(doc.similarityScore ?? 0)}
+                    </span>
+                  </div>
                   <p>{doc.text}</p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-400">
+                    <span>Vector {(doc.similarityScore ?? 0).toFixed(3)}</span>
+                    <span>Keyword {(doc.keywordScore ?? 0).toFixed(3)}</span>
+                    <span>RRF {(doc.hybridScore ?? 0).toFixed(3)}</span>
+                  </div>
                 </div>
               ))
             )}
