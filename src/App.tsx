@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText } from 'lucide-react';
 import { chunkText, DocumentChunk, projectChunksTo2D } from './utils/rag';
 import { describeFile, parseUploadedFile, UploadedDocument } from './utils/fileParsers';
+import { loadChunks, saveChunks, clearStoredChunks } from './utils/storage';
+import { CloudSettings, getStoredCloudSettings, saveCloudSettings, callCloudLLM } from './utils/cloud';
 
 export default function App() {
   const [inputText, setInputText] = useState('');
@@ -15,6 +17,8 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [cloudSettings, setCloudSettings] = useState<CloudSettings>(() => getStoredCloudSettings());
 
   const worker = useRef<Worker | null>(null);
   const chunksRef = useRef<DocumentChunk[]>([]);
@@ -37,7 +41,59 @@ export default function App() {
 
   useEffect(() => {
     chunksRef.current = chunks;
+    if (chunks.length > 0) {
+      saveChunks(chunks).catch((error) => {
+        console.error('Failed to persist chunks:', error);
+      });
+    }
   }, [chunks]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadChunks()
+      .then((storedChunks) => {
+        if (!cancelled && storedChunks.length > 0) {
+          setChunks(storedChunks);
+          setStatus('Loaded persisted knowledge base');
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load persisted chunks:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleCloudSettingsChange = (updates: Partial<CloudSettings>) => {
+    const nextSettings = { ...cloudSettings, ...updates };
+    setCloudSettings(nextSettings);
+    saveCloudSettings(nextSettings);
+  };
+
+  const handleClearKnowledgeBase = async () => {
+    await clearStoredChunks();
+    setChunks([]);
+    setRetrievedDocs([]);
+    setSelectedChunkId(null);
+    setAnswer('');
+    setStatus('Knowledge base cleared');
+  };
+
+  const handleCloudAnswer = async (queryText: string, matches: DocumentChunk[]) => {
+    const context = matches.map((match) => match.text);
+    setStatus(`Querying cloud ${cloudSettings.provider.toUpperCase()}...`);
+    try {
+      const cloudResponse = await callCloudLLM(queryText, context, cloudSettings);
+      setAnswer(cloudResponse);
+      setStatus('Answer generated via cloud');
+    } catch (error: any) {
+      setErrorMessage(error?.message ?? 'Cloud answer failed');
+      setStatus('Cloud answer failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     worker.current = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -59,6 +115,9 @@ export default function App() {
         const matches = data.matches ?? [];
         setRetrievedDocs(matches);
         setStatus('Retrieval complete');
+        if (data.cloudMode && matches.length > 0) {
+          handleCloudAnswer(data.query, matches);
+        }
       } else if (type === 'ANSWER_STREAM') {
         const safeToken = normalizeAnswerToken(token);
         setAnswer((prev) => prev + safeToken);
@@ -125,7 +184,12 @@ export default function App() {
     setStatus('Embedding query...');
     worker.current?.postMessage({
       type: 'EMBED_QUERY',
-      data: { query, chunks: chunksRef.current, requestId: nextRequestId }
+      data: {
+        query,
+        chunks: chunksRef.current,
+        requestId: nextRequestId,
+        cloudMode: cloudSettings.mode === 'cloud'
+      }
     });
   };
 
@@ -197,15 +261,75 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      <header className="border-b border-slate-800 p-4 flex items-center justify-between bg-slate-900/50">
+      <header className="border-b border-slate-800 p-4 flex flex-col gap-4 bg-slate-900/50 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-2">
           <Cpu className="w-6 h-6 text-indigo-400" />
-          <h1 className="font-bold text-lg">In-Browser Local RAG Engine</h1>
+          <div>
+            <h1 className="font-bold text-lg">In-Browser Local RAG Engine</h1>
+            <p className="text-xs text-slate-400">Mode: {cloudSettings.mode === 'cloud' ? `Cloud (${cloudSettings.provider})` : 'Local Browser AI'}</p>
+          </div>
         </div>
-        <span className="text-xs bg-indigo-950 text-indigo-300 border border-indigo-800 px-3 py-1 rounded-full">
-          100% Client-Side
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSettings((value) => !value)}
+            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 px-3 py-2 rounded-full"
+          >
+            {showSettings ? 'Close Settings' : 'Settings'}
+          </button>
+          <span className="text-xs bg-indigo-950 text-indigo-300 border border-indigo-800 px-3 py-1 rounded-full">
+            100% Client-Side
+          </span>
+        </div>
       </header>
+
+      {showSettings && (
+        <div className="mx-auto w-full max-w-6xl p-4 bg-slate-950 border-b border-slate-800 text-slate-100 rounded-b-xl shadow-xl">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">Cloud Fallback Settings</h2>
+              <label className="block text-xs text-slate-400">Mode</label>
+              <select
+                value={cloudSettings.mode}
+                onChange={(e) => handleCloudSettingsChange({ mode: e.target.value as any })}
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+              >
+                <option value="local">Local Browser AI</option>
+                <option value="cloud">Cloud API</option>
+              </select>
+
+              <label className="block text-xs text-slate-400">Provider</label>
+              <select
+                value={cloudSettings.provider}
+                onChange={(e) => handleCloudSettingsChange({ provider: e.target.value as any })}
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+              >
+                <option value="openai">OpenAI</option>
+                <option value="groq">Groq</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block text-xs text-slate-400">API Key</label>
+              <input
+                value={cloudSettings.apiKey}
+                onChange={(e) => handleCloudSettingsChange({ apiKey: e.target.value })}
+                placeholder="Enter your API key"
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+              />
+              <p className="text-[11px] text-slate-500">Your API key is stored locally in localStorage and used only for cloud queries.</p>
+              <button
+                type="button"
+                onClick={handleClearKnowledgeBase}
+                className="w-full rounded-lg bg-rose-600 hover:bg-rose-500 px-3 py-2 text-sm font-semibold text-white"
+              >
+                Clear persisted knowledge base
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 max-w-6xl w-full mx-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Left Column: Input Document */}

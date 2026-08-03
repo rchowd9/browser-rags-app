@@ -104,12 +104,16 @@ self.addEventListener('message', async (event) => {
       const embedding = Array.from(output.data) as number[];
       const matches = hybridRetrieveContext(embedding, data.chunks ?? [], data.query, 4);
 
-      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches }, requestId: data.requestId });
+      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches, cloudMode: data.cloudMode ?? false }, requestId: data.requestId });
 
-      if (matches.length > 0) {
-        const context = matches.map((match: any) => match.text);
-        await streamAnswer(data.query, context, data.requestId);
-      } else {
+      if (!data.cloudMode) {
+        if (matches.length > 0) {
+          const context = matches.map((match: any) => match.text);
+          await streamAnswer(data.query, context, data.requestId);
+        } else {
+          self.postMessage({ type: 'ANSWER_COMPLETE', requestId: data.requestId });
+        }
+      } else if (data.cloudMode && matches.length === 0) {
         self.postMessage({ type: 'ANSWER_COMPLETE', requestId: data.requestId });
       }
     } catch (error: any) {
