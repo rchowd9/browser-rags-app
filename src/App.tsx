@@ -21,6 +21,20 @@ export default function App() {
   const requestIdRef = useRef(0);
   const activeRequestIdRef = useRef<number | null>(null);
 
+  const normalizeAnswerToken = (token: unknown): string => {
+    if (typeof token === 'string') return token;
+    if (typeof token === 'number' || typeof token === 'boolean') return String(token);
+    if (Array.isArray(token)) return token.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('');
+    if (token && typeof token === 'object') {
+      return typeof (token as any).generated_text === 'string'
+        ? (token as any).generated_text
+        : typeof (token as any).text === 'string'
+        ? (token as any).text
+        : JSON.stringify(token);
+    }
+    return '';
+  };
+
   useEffect(() => {
     chunksRef.current = chunks;
   }, [chunks]);
@@ -46,7 +60,8 @@ export default function App() {
         setRetrievedDocs(matches);
         setStatus('Retrieval complete');
       } else if (type === 'ANSWER_STREAM') {
-        setAnswer((prev) => prev + token);
+        const safeToken = normalizeAnswerToken(token);
+        setAnswer((prev) => prev + safeToken);
       } else if (type === 'ANSWER_COMPLETE') {
         setStatus('Answer generated locally');
         setIsLoading(false);
