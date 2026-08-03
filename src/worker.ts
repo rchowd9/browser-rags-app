@@ -51,19 +51,26 @@ async function streamAnswer(query: string, context: string[], requestId: number)
   });
 
   const prompt = `Answer the user's question using only the provided context.\n\nContext:\n${context.join('\n---\n')}\n\nQuestion: ${query}\nAnswer:`;
-  await generator(prompt, {
+  const result = await generator(prompt, {
     max_new_tokens: 160,
     temperature: 0.7,
-    do_sample: true,
-    streamer: {
-      put: (token: string) => {
-        self.postMessage({ type: 'ANSWER_STREAM', token, requestId });
-      },
-      end: () => {
-        self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
-      }
-    }
+    do_sample: true
   });
+
+  const answerText = Array.isArray(result)
+    ? result
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') return (item.generated_text ?? item.text ?? JSON.stringify(item));
+          return String(item);
+        })
+        .join('')
+    : typeof result === 'string'
+    ? result
+    : JSON.stringify(result);
+
+  self.postMessage({ type: 'ANSWER_STREAM', token: answerText, requestId });
+  self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
 }
 
 self.addEventListener('message', async (event) => {
