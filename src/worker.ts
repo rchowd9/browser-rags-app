@@ -50,28 +50,52 @@ async function streamAnswer(query: string, context: string[], requestId: number)
     self.postMessage({ type: 'PROGRESS', data: progress, requestId });
   });
 
-  const prompt = `Answer the user's question using only the provided context.\n\nContext:\n${context.join('\n---\n')}\n\nQuestion: ${query}\nAnswer:`;
-  const result = await generator(prompt, {
+  // Instruct models expect chat-formatted turns, not a flat prompt string.
+  // Passing a raw string bypasses the model's chat template and causes it
+  // to just echo the input back instead of generating a real continuation.
+  const messages = [
+    {
+      role: 'system',
+      content: 'Answer the user\'s question using only the provided context. If the answer is not in the context, say so.'
+    },
+    {
+      role: 'user',
+      content: `Context:\n${context.join('\n---\n')}\n\nQuestion: ${query}`
+    }
+  ];
+
+  const result = await generator(messages, {
     max_new_tokens: 160,
     temperature: 0.7,
     do_sample: true
   });
 
-  const rawAnswer = Array.isArray(result)
-    ? result
-        .map((item) => {
-          if (typeof item === 'string') return item;
-          if (item && typeof item === 'object') return (item.generated_text ?? item.text ?? JSON.stringify(item));
-          return String(item);
-        })
-        .join('')
-    : typeof result === 'string'
-    ? result
-    : JSON.stringify(result);
+  // With chat input, transformers.js returns generated_text as the full
+  // message array (system/user/assistant). Pull out the assistant's reply.
+  const extractAssistantReply = (output: any): string => {
+    const entry = Array.isArray(output) ? output[0] : output;
+    const generated = entry?.generated_text ?? entry;
 
-  const answerText = rawAnswer.startsWith(prompt)
-    ? rawAnswer.slice(prompt.length).trimStart()
-    : rawAnswer.trim();
+    if (Array.isArray(generated)) {
+      const assistantTurn = [...generated].reverse().find((turn) => turn?.role === 'assistant');
+      return assistantTurn?.content?.trim() ?? '';
+    }
+    if (typeof generated === 'string') {
+      return generated.trim();
+    }
+    return '';
+  };
+
+  const answerText = extractAssistantReply(result);
+
+  if (!answerText) {
+    self.postMessage({
+      type: 'ANSWER_FALLBACK',
+      data: { text: 'The local model did not return a usable answer. Try rephrasing your question, or switch to Cloud mode in Settings.' },
+      requestId
+    });
+    return;
+  }
 
   self.postMessage({ type: 'ANSWER_STREAM', token: answerText, requestId });
   self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
