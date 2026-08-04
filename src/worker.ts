@@ -57,7 +57,7 @@ async function streamAnswer(query: string, context: string[], requestId: number)
     do_sample: true
   });
 
-  const answerText = Array.isArray(result)
+  const rawAnswer = Array.isArray(result)
     ? result
         .map((item) => {
           if (typeof item === 'string') return item;
@@ -68,6 +68,10 @@ async function streamAnswer(query: string, context: string[], requestId: number)
     : typeof result === 'string'
     ? result
     : JSON.stringify(result);
+
+  const answerText = rawAnswer.startsWith(prompt)
+    ? rawAnswer.slice(prompt.length).trimStart()
+    : rawAnswer.trim();
 
   self.postMessage({ type: 'ANSWER_STREAM', token: answerText, requestId });
   self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
