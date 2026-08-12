@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText } from 'lucide-react';
-import { chunkText, DocumentChunk, projectChunksTo2D } from './utils/rag';
+import { chunkText, ChunkOptions } from './utils/chunkers';
+import { DocumentChunk, projectChunksTo2D } from './utils/rag';
 import { describeFile, parseUploadedFile, UploadedDocument } from './utils/fileParsers';
 import { loadChunks, saveChunks, clearStoredChunks } from './utils/storage';
 import { CloudSettings, getStoredCloudSettings, saveCloudSettings, callCloudLLM } from './utils/cloud';
+import ChunkControls from './utils/ChunkControls';
 
 export default function App() {
   const [inputText, setInputText] = useState('');
@@ -18,6 +20,11 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [chunkOptions, setChunkOptions] = useState<ChunkOptions>({
+    chunkSize: 400,
+    chunkOverlap: 80,
+    splitBy: 'sentence'
+  });
   const [cloudSettings, setCloudSettings] = useState<CloudSettings>(() => getStoredCloudSettings());
 
   const worker = useRef<Worker | null>(null);
@@ -153,9 +160,9 @@ export default function App() {
     setErrorMessage('');
     setStatus(`Chunking ${label.toLowerCase()}...`);
 
-    const rawChunks = chunkText(textToProcess);
-    const structuredChunks: DocumentChunk[] = rawChunks.map((text, idx) => ({
-      id: `chunk-${idx}`,
+    const rawChunks = chunkText(textToProcess, chunkOptions);
+    const structuredChunks: DocumentChunk[] = rawChunks.map(({ id, text }) => ({
+      id,
       text
     }));
 
@@ -340,6 +347,8 @@ export default function App() {
             </h2>
             <span className="text-xs text-slate-400">{chunks.length} chunks stored</span>
           </div>
+
+          <ChunkControls options={chunkOptions} setOptions={setChunkOptions} />
 
           <div
             onDragOver={(event) => {

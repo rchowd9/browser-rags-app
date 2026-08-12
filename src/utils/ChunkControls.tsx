@@ -1,6 +1,12 @@
 import React from "react";
+import type { ChunkOptions } from './chunkers';
 
-export default function ChunkControls({ options, setOptions }) {
+interface ChunkControlsProps {
+  options: ChunkOptions;
+  setOptions: React.Dispatch<React.SetStateAction<ChunkOptions>>;
+}
+
+export default function ChunkControls({ options, setOptions }: ChunkControlsProps) {
   return (
     <div className="bg-slate-900 border border-slate-800 p-4 rounded-lg mb-4 text-xs text-slate-300 grid grid-cols-1 md:grid-cols-3 gap-4">
       <div>
@@ -41,8 +47,11 @@ export default function ChunkControls({ options, setOptions }) {
         <label className="block mb-1 font-semibold">Splitting Strategy</label>
         <select
           value={options.splitBy}
-          onChange={(e) =>
-            setOptions((prev) => ({ ...prev, splitBy: e.target.value }))
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+            setOptions((prev) => ({
+              ...prev,
+              splitBy: e.target.value as ChunkOptions['splitBy']
+            }))
           }
           className="w-full bg-slate-800 border border-slate-700 rounded p-1.5 text-slate-200 focus:outline-none focus:border-blue-500"
         >
