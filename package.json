@@ -14,7 +14,7 @@
     "dexie": "^3.2.4",
     "idb": "^7.1.1",
     "lucide-react": "^0.300.0",
-    "mammoth": "^1.12.0",
+    "mammoth": "^1.12.1",
     "minisearch": "^7.1.0",
     "pdfjs-dist": "^6.2.108",
     "react": "^18.3.1",
