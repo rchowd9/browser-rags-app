@@ -201,36 +201,42 @@ export default function App() {
   };
 
   const handleFileUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  if (!files || files.length === 0) return;
 
-    const parsedDocs = [] as UploadedDocument[];
-    const errors = [] as string[];
+  setIsLoading(true);
+  setStatus('Parsing uploaded files...');
+  const parsedDocs: UploadedDocument[] = [];
+  const errors: string[] = [];
 
-    for (const file of Array.from(files)) {
-      try {
-        const parsed = await parseUploadedFile(file);
-        parsedDocs.push(parsed);
-      } catch (error: any) {
-        errors.push(error?.message || `Unable to parse ${file.name}.`);
-      }
+  for (const file of Array.from(files)) {
+    try {
+      const parsed = await parseUploadedFile(file);
+      parsedDocs.push(parsed);
+    } catch (error: any) {
+      errors.push(error?.message || `Unable to parse ${file.name}.`);
     }
+  }
 
-    if (parsedDocs.length === 0) {
-      setUploadedDocs([]);
-      setErrorMessage(errors.join(' '));
-      setStatus('No readable content found in the uploaded files.');
-      return;
-    }
+  if (parsedDocs.length === 0) {
+    setUploadedDocs([]);
+    setErrorMessage(errors.join(' '));
+    setStatus('No readable content found in the uploaded files.');
+    setIsLoading(false);
+    return;
+  }
 
-    const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
-    setUploadedDocs(parsedDocs);
-    if (errors.length > 0) {
-      setErrorMessage(`Some files could not be parsed: ${errors.join(' ')}`);
-    } else {
-      setErrorMessage('');
-    }
-    handleProcessText(combinedText, 'uploaded document');
-  };
+  const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
+  setUploadedDocs(parsedDocs);
+  setInputText(combinedText); // Sync textarea text
+
+  if (errors.length > 0) {
+    setErrorMessage(`Some files could not be parsed: ${errors.join(' ')}`);
+  } else {
+    setErrorMessage('');
+  }
+
+  handleProcessText(combinedText, 'uploaded document');
+};
 
   const onDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
