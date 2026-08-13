@@ -20,6 +20,8 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [embeddingTimeMs, setEmbeddingTimeMs] = useState<number>(0);
+  const [retrievalTimeMs, setRetrievalTimeMs] = useState<number>(0);
   const [chunkOptions, setChunkOptions] = useState<ChunkOptions>({
     chunkSize: 400,
     chunkOverlap: 80,
@@ -114,13 +116,17 @@ export default function App() {
       if (type === 'PROGRESS') {
         setStatus(`Loading Model: ${progress?.file ?? ''} (${Math.round(progress?.progress ?? 0)}%)`);
       } else if (type === 'CHUNKS_EMBEDDED') {
-        setChunks(data);
+        const chunksPayload = data?.chunks ?? data;
+        setChunks(chunksPayload);
+        setEmbeddingTimeMs(data?.timings?.totalEmbeddingMs ?? 0);
         setSelectedChunkId(null);
         setStatus('Document embedded successfully!');
         setIsLoading(false);
       } else if (type === 'QUERY_EMBEDDED') {
-        const matches = data.matches ?? [];
+        const matches = data.matches ?? data.chunks ?? [];
         setRetrievedDocs(matches);
+        setEmbeddingTimeMs(data?.timings?.embeddingMs ?? 0);
+        setRetrievalTimeMs(data?.timings?.retrievalMs ?? 0);
         setStatus('Retrieval complete');
         if (data.cloudMode && matches.length > 0) {
           handleCloudAnswer(data.query, matches);
@@ -449,7 +455,7 @@ export default function App() {
               <h3 className="text-xs uppercase font-semibold text-slate-400 tracking-wider">Embedding Inspector</h3>
               <span className="text-[11px] text-slate-500">{vectorStats.points} points</span>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-xs text-slate-300 mb-3">
+            <div className="grid grid-cols-5 gap-2 text-xs text-slate-300 mb-3">
               <div className="rounded bg-slate-900 p-2">
                 <div className="text-slate-500 text-[10px] uppercase">Top Match</div>
                 <div className="font-semibold text-indigo-300">{(vectorStats.topSimilarity * 100).toFixed(1)}%</div>
@@ -461,6 +467,14 @@ export default function App() {
               <div className="rounded bg-slate-900 p-2">
                 <div className="text-slate-500 text-[10px] uppercase">Dims</div>
                 <div className="font-semibold text-slate-100">{vectorStats.dimensions}</div>
+              </div>
+              <div className="rounded bg-slate-900 p-2">
+                <div className="text-slate-500 text-[10px] uppercase">Embedding time</div>
+                <div className="font-semibold text-slate-100">{embeddingTimeMs} ms</div>
+              </div>
+              <div className="rounded bg-slate-900 p-2">
+                <div className="text-slate-500 text-[10px] uppercase">Retrieval latency</div>
+                <div className="font-semibold text-slate-100">{retrievalTimeMs} ms</div>
               </div>
             </div>
             <svg viewBox="0 0 320 220" className="w-full h-56 rounded-lg bg-slate-900/80">

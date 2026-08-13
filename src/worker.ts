@@ -111,15 +111,20 @@ self.addEventListener('message', async (event) => {
       });
 
       const { chunks } = data;
-      const embeddedChunks = [];
+      const embeddedChunks: any[] = [];
+      const totalStart = performance.now();
 
       for (const chunk of chunks) {
+        const chunkStart = performance.now();
         const output = await extractor(chunk.text, { pooling: 'mean', normalize: true });
+        const chunkEnd = performance.now();
         const embedding = Array.from(output.data) as number[];
-        embeddedChunks.push({ ...chunk, embedding });
+        embeddedChunks.push({ ...chunk, embedding, embeddingMs: Math.round(chunkEnd - chunkStart) });
       }
 
-      self.postMessage({ type: 'CHUNKS_EMBEDDED', data: embeddedChunks, requestId: data.requestId });
+      const totalMs = Math.round(performance.now() - totalStart);
+
+      self.postMessage({ type: 'CHUNKS_EMBEDDED', data: { chunks: embeddedChunks, timings: { totalEmbeddingMs: totalMs } }, requestId: data.requestId });
     } catch (error: any) {
       self.postMessage({ type: 'ERROR', error: error.message });
     }
@@ -128,11 +133,16 @@ self.addEventListener('message', async (event) => {
   if (type === 'EMBED_QUERY') {
     try {
       const extractor = await PipelineSingleton.getInstance();
+      const embedStart = performance.now();
       const output = await extractor(data.query, { pooling: 'mean', normalize: true });
+      const embedEnd = performance.now();
       const embedding = Array.from(output.data) as number[];
-      const matches = hybridRetrieveContext(embedding, data.chunks ?? [], data.query, 4);
 
-      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches, cloudMode: data.cloudMode ?? false }, requestId: data.requestId });
+      const retrievalStart = performance.now();
+      const matches = hybridRetrieveContext(embedding, data.chunks ?? [], data.query, 4);
+      const retrievalEnd = performance.now();
+
+      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches, cloudMode: data.cloudMode ?? false, timings: { embeddingMs: Math.round(embedEnd - embedStart), retrievalMs: Math.round(retrievalEnd - retrievalStart) } }, requestId: data.requestId });
 
       if (!data.cloudMode) {
         if (matches.length > 0) {
