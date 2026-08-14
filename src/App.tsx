@@ -1,11 +1,39 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText } from 'lucide-react';
+import { Upload, Cpu, MessageSquare, BookOpen, Send, Loader2, FileText, Sparkles } from 'lucide-react';
 import { chunkText, ChunkOptions } from './utils/chunkers';
 import { DocumentChunk, projectChunksTo2D } from './utils/rag';
 import { describeFile, parseUploadedFile, UploadedDocument } from './utils/fileParsers';
 import { loadChunks, saveChunks, clearStoredChunks } from './utils/storage';
 import { CloudSettings, getStoredCloudSettings, saveCloudSettings, callCloudLLM } from './utils/cloud';
 import ChunkControls from './utils/ChunkControls';
+
+/**
+ * Utility to strip system prompts, context blocks, and user query templates
+ * from the generated completion string.
+ */
+function stripSystemPrompt(fullText: string): string {
+  if (!fullText) return '';
+
+  let cleaned = fullText;
+
+  // 1. Remove standard chat/system header blocks if echoed back
+  cleaned = cleaned.replace(/^system\s*[\s\S]*?(?=user|assistant|$)/i, '');
+  cleaned = cleaned.replace(/^user\s*[\s\S]*?(?=assistant|$)/i, '');
+
+  // 2. Remove plain text prompt templates if echoed back
+  if (cleaned.includes('Question:')) {
+    const parts = cleaned.split(/Question:.*?(?:\n|\r)/i);
+    cleaned = parts[parts.length - 1];
+  }
+
+  // 3. Strip remaining prefix labels like "Answer:", "assistant", or system instructions
+  cleaned = cleaned
+    .replace(/^Answer the user's question using only the provided context\..*?\n/i, '')
+    .replace(/^(Answer|assistant):\s*/i, '')
+    .trim();
+
+  return cleaned;
+}
 
 export default function App() {
   const [inputText, setInputText] = useState('');
@@ -16,6 +44,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDocument[]>([]);
   const [answer, setAnswer] = useState<string>('');
+  const [rawStreamBuffer, setRawStreamBuffer] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
@@ -86,6 +115,7 @@ export default function App() {
     setRetrievedDocs([]);
     setSelectedChunkId(null);
     setAnswer('');
+    setRawStreamBuffer('');
     setStatus('Knowledge base cleared');
   };
 
@@ -94,7 +124,7 @@ export default function App() {
     setStatus(`Querying cloud ${cloudSettings.provider.toUpperCase()}...`);
     try {
       const cloudResponse = await callCloudLLM(queryText, context, cloudSettings);
-      setAnswer(cloudResponse);
+      setAnswer(stripSystemPrompt(cloudResponse));
       setStatus('Answer generated via cloud');
     } catch (error: any) {
       setErrorMessage(error?.message ?? 'Cloud answer failed');
@@ -133,7 +163,11 @@ export default function App() {
         }
       } else if (type === 'ANSWER_STREAM') {
         const safeToken = normalizeAnswerToken(token);
-        setAnswer((prev) => prev + safeToken);
+        setRawStreamBuffer((prev) => {
+          const nextBuffer = prev + safeToken;
+          setAnswer(stripSystemPrompt(nextBuffer));
+          return nextBuffer;
+        });
       } else if (type === 'ANSWER_COMPLETE') {
         setStatus('Answer generated locally');
         setIsLoading(false);
@@ -163,6 +197,7 @@ export default function App() {
 
     setIsLoading(true);
     setAnswer('');
+    setRawStreamBuffer('');
     setErrorMessage('');
     setStatus(`Chunking ${label.toLowerCase()}...`);
 
@@ -193,6 +228,7 @@ export default function App() {
 
     setIsLoading(true);
     setAnswer('');
+    setRawStreamBuffer('');
     setErrorMessage('');
     setStatus('Embedding query...');
     worker.current?.postMessage({
@@ -207,42 +243,42 @@ export default function App() {
   };
 
   const handleFileUpload = async (files: FileList | null) => {
-  if (!files || files.length === 0) return;
+    if (!files || files.length === 0) return;
 
-  setIsLoading(true);
-  setStatus('Parsing uploaded files...');
-  const parsedDocs: UploadedDocument[] = [];
-  const errors: string[] = [];
+    setIsLoading(true);
+    setStatus('Parsing uploaded files...');
+    const parsedDocs: UploadedDocument[] = [];
+    const errors: string[] = [];
 
-  for (const file of Array.from(files)) {
-    try {
-      const parsed = await parseUploadedFile(file);
-      parsedDocs.push(parsed);
-    } catch (error: any) {
-      errors.push(error?.message || `Unable to parse ${file.name}.`);
+    for (const file of Array.from(files)) {
+      try {
+        const parsed = await parseUploadedFile(file);
+        parsedDocs.push(parsed);
+      } catch (error: any) {
+        errors.push(error?.message || `Unable to parse ${file.name}.`);
+      }
     }
-  }
 
-  if (parsedDocs.length === 0) {
-    setUploadedDocs([]);
-    setErrorMessage(errors.join(' '));
-    setStatus('No readable content found in the uploaded files.');
-    setIsLoading(false);
-    return;
-  }
+    if (parsedDocs.length === 0) {
+      setUploadedDocs([]);
+      setErrorMessage(errors.join(' '));
+      setStatus('No readable content found in the uploaded files.');
+      setIsLoading(false);
+      return;
+    }
 
-  const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
-  setUploadedDocs(parsedDocs);
-  setInputText(combinedText); // Sync textarea text
+    const combinedText = parsedDocs.map((doc) => `Source: ${doc.name}\n${doc.content}`).join('\n\n');
+    setUploadedDocs(parsedDocs);
+    setInputText(combinedText);
 
-  if (errors.length > 0) {
-    setErrorMessage(`Some files could not be parsed: ${errors.join(' ')}`);
-  } else {
-    setErrorMessage('');
-  }
+    if (errors.length > 0) {
+      setErrorMessage(`Some files could not be parsed: ${errors.join(' ')}`);
+    } else {
+      setErrorMessage('');
+    }
 
-  handleProcessText(combinedText, 'uploaded document');
-};
+    handleProcessText(combinedText, 'uploaded document');
+  };
 
   const onDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -524,10 +560,18 @@ export default function App() {
               ))
             )}
 
-            {answer && (
-              <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 p-3">
-                <h3 className="text-xs uppercase font-semibold text-emerald-300 tracking-wider mb-2">Answer</h3>
-                <p className="text-sm text-emerald-100 whitespace-pre-wrap">{answer}</p>
+            {/* Clean Answer Container */}
+            {(answer || (isLoading && retrievedDocs.length > 0)) && (
+              <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/30 p-4 shadow-lg transition-all">
+                <div className="flex items-center gap-2 mb-2 text-emerald-400 font-medium text-xs uppercase tracking-wider">
+                  <Sparkles className="w-4 h-4" />
+                  <span>Generated Answer</span>
+                  {isLoading && <Loader2 className="w-3 h-3 animate-spin ml-auto text-emerald-400" />}
+                </div>
+
+                <div className="text-sm text-emerald-100 whitespace-pre-wrap font-sans leading-relaxed">
+                  {answer || <span className="text-emerald-500/70 italic">Decoding response stream...</span>}
+                </div>
               </div>
             )}
           </div>
