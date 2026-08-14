@@ -37,6 +37,7 @@ class GenerationSingleton {
 async function streamAnswer(query: string, context: string[], requestId: number) {
   const navigatorWithGpu = navigator as Navigator & { gpu?: unknown };
   const webGpuSupported = typeof navigator !== 'undefined' && typeof navigatorWithGpu.gpu !== 'undefined';
+  
   if (!webGpuSupported) {
     self.postMessage({
       type: 'ANSWER_FALLBACK',
@@ -46,59 +47,64 @@ async function streamAnswer(query: string, context: string[], requestId: number)
     return;
   }
 
-  const generator = await GenerationSingleton.getInstance((progress) => {
-    self.postMessage({ type: 'PROGRESS', data: progress, requestId });
-  });
+  try {
+    const generator = await GenerationSingleton.getInstance((progress) => {
+      self.postMessage({ type: 'PROGRESS', data: progress, requestId });
+    });
 
-  // Instruct models expect chat-formatted turns, not a flat prompt string.
-  // Passing a raw string bypasses the model's chat template and causes it
-  // to just echo the input back instead of generating a real continuation.
-  const messages = [
-    {
-      role: 'system',
-      content: 'Answer the user\'s question using only the provided context. If the answer is not in the context, say so.'
-    },
-    {
-      role: 'user',
-      content: `Context:\n${context.join('\n---\n')}\n\nQuestion: ${query}`
+    // Instruct models expect chat-formatted turns, not a flat prompt string.
+    const messages = [
+      {
+        role: 'system',
+        content: 'Answer the user\'s question using only the provided context. If the answer is not in the context, say so.'
+      },
+      {
+        role: 'user',
+        content: `Context:\n${context.join('\n---\n')}\n\nQuestion: ${query}`
+      }
+    ];
+
+    const result = await generator(messages, {
+      max_new_tokens: 160,
+      temperature: 0.7,
+      do_sample: true
+    });
+
+    // Extract the assistant's reply from chat array output
+    const extractAssistantReply = (output: any): string => {
+      const entry = Array.isArray(output) ? output[0] : output;
+      const generated = entry?.generated_text ?? entry;
+
+      if (Array.isArray(generated)) {
+        const assistantTurn = [...generated].reverse().find((turn) => turn?.role === 'assistant');
+        return assistantTurn?.content?.trim() ?? '';
+      }
+      if (typeof generated === 'string') {
+        return generated.trim();
+      }
+      return '';
+    };
+
+    const answerText = extractAssistantReply(result);
+
+    if (!answerText) {
+      self.postMessage({
+        type: 'ANSWER_FALLBACK',
+        data: { text: 'The local model did not return a usable answer. Try rephrasing your question, or switch to Cloud mode in Settings.' },
+        requestId
+      });
+      return;
     }
-  ];
 
-  const result = await generator(messages, {
-    max_new_tokens: 160,
-    temperature: 0.7,
-    do_sample: true
-  });
-
-  // With chat input, transformers.js returns generated_text as the full
-  // message array (system/user/assistant). Pull out the assistant's reply.
-  const extractAssistantReply = (output: any): string => {
-    const entry = Array.isArray(output) ? output[0] : output;
-    const generated = entry?.generated_text ?? entry;
-
-    if (Array.isArray(generated)) {
-      const assistantTurn = [...generated].reverse().find((turn) => turn?.role === 'assistant');
-      return assistantTurn?.content?.trim() ?? '';
-    }
-    if (typeof generated === 'string') {
-      return generated.trim();
-    }
-    return '';
-  };
-
-  const answerText = extractAssistantReply(result);
-
-  if (!answerText) {
+    self.postMessage({ type: 'ANSWER_STREAM', token: answerText, requestId });
+    self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
+  } catch (error: any) {
     self.postMessage({
-      type: 'ANSWER_FALLBACK',
-      data: { text: 'The local model did not return a usable answer. Try rephrasing your question, or switch to Cloud mode in Settings.' },
+      type: 'ERROR',
+      error: error?.message || 'Answer generation failed',
       requestId
     });
-    return;
   }
-
-  self.postMessage({ type: 'ANSWER_STREAM', token: answerText, requestId });
-  self.postMessage({ type: 'ANSWER_COMPLETE', requestId });
 }
 
 self.addEventListener('message', async (event) => {
@@ -119,20 +125,33 @@ self.addEventListener('message', async (event) => {
         const output = await extractor(chunk.text, { pooling: 'mean', normalize: true });
         const chunkEnd = performance.now();
         const embedding = Array.from(output.data) as number[];
-        embeddedChunks.push({ ...chunk, embedding, embeddingMs: Math.round(chunkEnd - chunkStart) });
+        
+        embeddedChunks.push({
+          ...chunk,
+          embedding,
+          embeddingMs: Math.round(chunkEnd - chunkStart)
+        });
       }
 
       const totalMs = Math.round(performance.now() - totalStart);
 
-      self.postMessage({ type: 'CHUNKS_EMBEDDED', data: { chunks: embeddedChunks, timings: { totalEmbeddingMs: totalMs } }, requestId: data.requestId });
+      self.postMessage({
+        type: 'CHUNKS_EMBEDDED',
+        data: {
+          chunks: embeddedChunks,
+          timings: { totalEmbeddingMs: totalMs }
+        },
+        requestId: data.requestId
+      });
     } catch (error: any) {
-      self.postMessage({ type: 'ERROR', error: error.message });
+      self.postMessage({ type: 'ERROR', error: error?.message || 'Embedding failed', requestId: data?.requestId });
     }
   }
 
   if (type === 'EMBED_QUERY') {
     try {
       const extractor = await PipelineSingleton.getInstance();
+      
       const embedStart = performance.now();
       const output = await extractor(data.query, { pooling: 'mean', normalize: true });
       const embedEnd = performance.now();
@@ -142,7 +161,20 @@ self.addEventListener('message', async (event) => {
       const matches = hybridRetrieveContext(embedding, data.chunks ?? [], data.query, 4);
       const retrievalEnd = performance.now();
 
-      self.postMessage({ type: 'QUERY_EMBEDDED', data: { embedding, query: data.query, matches, cloudMode: data.cloudMode ?? false, timings: { embeddingMs: Math.round(embedEnd - embedStart), retrievalMs: Math.round(retrievalEnd - retrievalStart) } }, requestId: data.requestId });
+      self.postMessage({
+        type: 'QUERY_EMBEDDED',
+        data: {
+          embedding,
+          query: data.query,
+          matches,
+          cloudMode: data.cloudMode ?? false,
+          timings: {
+            embeddingMs: Math.round(embedEnd - embedStart),
+            retrievalMs: Math.round(retrievalEnd - retrievalStart)
+          }
+        },
+        requestId: data.requestId
+      });
 
       if (!data.cloudMode) {
         if (matches.length > 0) {
@@ -155,7 +187,7 @@ self.addEventListener('message', async (event) => {
         self.postMessage({ type: 'ANSWER_COMPLETE', requestId: data.requestId });
       }
     } catch (error: any) {
-      self.postMessage({ type: 'ERROR', error: error.message });
+      self.postMessage({ type: 'ERROR', error: error?.message || 'Query processing failed', requestId: data?.requestId });
     }
   }
 });
