@@ -92,7 +92,7 @@ export default function App() {
       .then((storedChunks) => {
         if (!cancelled && storedChunks.length > 0) {
           setChunks(storedChunks);
-          setStatus('Loaded persisted knowledge base');
+          setStatus(`Loaded ${storedChunks.length} chunks from local IndexedDB store`);
         }
       })
       .catch((error) => {
@@ -110,13 +110,18 @@ export default function App() {
   };
 
   const handleClearKnowledgeBase = async () => {
-    await clearStoredChunks();
-    setChunks([]);
-    setRetrievedDocs([]);
-    setSelectedChunkId(null);
-    setAnswer('');
-    setRawStreamBuffer('');
-    setStatus('Knowledge base cleared');
+    try {
+      await clearStoredChunks();
+      setChunks([]);
+      setRetrievedDocs([]);
+      setSelectedChunkId(null);
+      setAnswer('');
+      setRawStreamBuffer('');
+      setStatus('Knowledge base cleared');
+    } catch (error) {
+      console.error('Failed to clear knowledge base:', error);
+      setErrorMessage('Failed to clear stored chunks from IndexedDB');
+    }
   };
 
   const handleCloudAnswer = async (queryText: string, matches: DocumentChunk[]) => {
