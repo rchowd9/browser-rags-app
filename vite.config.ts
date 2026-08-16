@@ -3,8 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  // GitHub Pages deploys under subpaths: https://username.github.io/repo-name/
-  base: process.env.NODE_ENV === 'production' ? '/browser-rag-app/' : '/',
+  // Use a relative base so the production build works from GitHub Pages,
+  // custom domains, and other static hosts without broken asset URLs.
+  base: './',
   worker: {
     format: 'es'
   }
